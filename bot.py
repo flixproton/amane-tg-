@@ -8,15 +8,23 @@ from motor.motor_asyncio import AsyncIOMotorClient
 # --- CONFIGURATION ---
 BOT_TOKEN = "8280957760:AAHcUGZEwCMWMI42qSLrwrgaFe-F_M9OKgQ"
 MONGO_URI = "mongodb+srv://<db_username>:MfUnSMOIwDJL1ISu@cluster0.vprnblv.mongodb.net/?appName=Cluster0"
-CHANNELS = ["@flix_num_to_info"]  # Add multiple channel usernames here
-ADMIN_ID = 7189814021  # Your Telegram User ID
-BRAND_NAME = "🛡️ Telegram OSINT Bot"
-OWNER_USERNAME = "@ardgi23"
-PREMIUM_PRICE = "50rs for 1 week"
+ADMIN_ID = 7189814021  # Your Telegram ID
+CHANNELS = ["@flix_num_to_info"]  # Channels for Force Join
+
+# API Config
+API_TOKEN = "@ONE_OF_ALL_OWNER1"
+API_BASE_URL = "https://spyshadow.site/selling-apis/tg-to-num.php"
+
+# Branding (Add as many as you want)
+BRANDING_LIST = [
+    "✨ Powered by OSINT Master",
+    "📢 Join: @flix_num_to_info",
+    "🛠 Developer: @flix_num_to_info"
+]
 
 # --- DATABASE SETUP ---
 client = AsyncIOMotorClient(MONGO_URI)
-db = client['osint_bot_db']
+db = client['tg_osint_bot']
 users_col = db['users']
 settings_col = db['settings']
 
@@ -37,158 +45,163 @@ async def get_user(user_id):
         await users_col.insert_one(user)
     return user
 
-# --- FORCE JOIN CHECK ---
-async def is_subscribed(bot, user_id):
+# --- HELPERS ---
+async def check_force_join(bot, user_id):
     for channel in CHANNELS:
         try:
             member = await bot.get_chat_member(chat_id=channel, user_id=user_id)
             if member.status in [constants.ChatMemberStatus.LEFT, constants.ChatMemberStatus.BANNED]:
                 return False
-        except Exception:
-            return False
+        except: return False
     return True
 
-# --- HANDLERS ---
+def get_branding_text():
+    return "\n".join(BRANDING_LIST)
+
+# --- BOT HANDLERS ---
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     await get_user(user_id)
     
     welcome_text = (
-        f"👋 Welcome to **{BRAND_NAME}**\n\n"
-        "I can help you find information using Telegram User IDs.\n\n"
-        "📜 **Commands:**\n"
-        "🔹 `/tg <userid>` - Search information\n"
-        "🔹 `/buypremium` - Get unlimited searches\n"
-        "🔹 `/myinfo` - Check your status\n\n"
-        "⚠️ *Please make sure you have joined all our channels!*"
+        "👋 **Welcome to Telegram OSINT Bot**\n\n"
+        "To search for a user ID, use the command:\n"
+        "👉 `/tg 8370153065`\n\n"
+        "**Pricing:**\n"
+        "• 2 Free searches daily\n"
+        "• Premium: 50rs / week (Unlimited)\n\n"
+        "Please join our channels and click 'Verify' to start."
     )
     
-    # Force Join Buttons
-    buttons = [[InlineKeyboardButton(f"Join Channel", url=f"https://t.me/{c.replace('@','')}") for c in CHANNELS]]
-    buttons.append([InlineKeyboardButton("✅ Joined / Verify", callback_data="check_joined")])
+    buttons = [[InlineKeyboardButton("Join Channel", url=f"https://t.me/{c.replace('@','')}") for c in CHANNELS]]
+    buttons.append([InlineKeyboardButton("✅ Verify Join", callback_data="check")])
     
     await update.message.reply_text(welcome_text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
-
-async def buy_premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = (
-        f"💎 **Premium Plan**\n\n"
-        f"💰 Price: {PREMIUM_PRICE}\n"
-        f"🚀 Benefits: Unlimited Searches, Priority Support.\n\n"
-        f"Contact Admin to buy: {OWNER_USERNAME}"
-    )
-    await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def tg_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
     # 1. Force Join Check
-    if not await is_subscribed(context.bot, user_id):
-        await update.message.reply_text("❌ You must join all channels to use this command! Use /start to see links.")
+    if not await check_force_join(context.bot, user_id):
+        await update.message.reply_text("❌ Join all channels first! Use /start to see links.")
         return
 
     # 2. Argument Check
     if not context.args:
-        await update.message.reply_text("❌ Usage: `/tg <userid>`\nExample: `/tg 8370153065`", parse_mode="Markdown")
+        await update.message.reply_text("❌ Usage: `/tg <userid>`")
         return
     
-    search_id = context.args[0]
+    target_id = context.args[0]
     user = await get_user(user_id)
     
-    # 3. Premium/Limit Check
+    # 3. Premium Expiry Check
     is_premium = user.get("is_premium", False)
     if is_premium and user["premium_expiry"] < datetime.now():
         await users_col.update_one({"user_id": user_id}, {"$set": {"is_premium": False}})
         is_premium = False
+        await update.message.reply_text("⚠️ Your premium expired. Switched to free plan.")
 
+    # 4. Limit Check
     today = datetime.now().strftime("%Y-%m-%d")
     daily_limit = await get_daily_limit()
     
     if not is_premium:
         if user.get("last_search_date") != today:
             await users_col.update_one({"user_id": user_id}, {"$set": {"daily_searches": 0, "last_search_date": today}})
-            current_searches = 0
+            searches_done = 0
         else:
-            current_searches = user.get("daily_searches", 0)
+            searches_done = user.get("daily_searches", 0)
 
-        if current_searches >= daily_limit:
-            await update.message.reply_text(f"🚫 Limit Reached ({daily_limit}/{daily_limit})\nBuy Premium for Unlimited: /buypremium")
+        if searches_done >= daily_limit:
+            await update.message.reply_text(f"🚫 Limit Reached! ({daily_limit}/{daily_limit})\nBuy Premium for unlimited: /buypremium")
             return
 
-    # 4. API Call
-    wait_msg = await update.message.reply_text("🔍 Searching database...")
+    # 5. API Call
+    status_msg = await update.message.reply_text("🔎 Searching...")
     try:
-        api_url = f"https://yash-tg-2-num.alphamovies.workers.dev/?userid={search_id}"
-        response = requests.get(api_url, timeout=10).text
+        response = requests.get(f"{API_BASE_URL}?token={API_TOKEN}&q={target_id}", timeout=15)
+        api_data = response.text
         
-        # 5. Success - Deduct Credit
+        # 6. Deduct Credit
         if not is_premium:
             await users_col.update_one({"user_id": user_id}, {"$inc": {"daily_searches": 1}})
-            rem = daily_limit - (user.get("daily_searches", 0) + 1)
-        else:
-            rem = "Unlimited"
-
-        final_reply = (
-            f"**{BRAND_NAME} Result**\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"{response}\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"👤 User: {OWNER_USERNAME}\n"
-            f"🔋 Searches Left: {rem}"
+        
+        # 7. Format Result
+        result_msg = (
+            f"📍 **OSINT SEARCH RESULT**\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"🔍 **ID:** `{target_id}`\n\n"
+            f"{api_data}\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"{get_branding_text()}"
         )
-        await wait_msg.edit_text(final_reply)
+        await status_msg.edit_text(result_msg, parse_mode="Markdown")
 
     except Exception as e:
-        await wait_msg.edit_text("❌ Data not found or API error.")
+        await status_msg.edit_text("❌ API Error or Data Not Found.")
+
+async def buy_premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = (
+        "💎 **Get Premium Membership**\n\n"
+        "✅ Unlimited Searches\n"
+        "✅ No Daily Limits\n"
+        "✅ 1 Week: 50rs\n\n"
+        f"Contact Owner to Buy: {BRANDING_LIST[-1].split()[-1]}"
+    )
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 # --- ADMIN COMMANDS ---
-async def set_limit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return
-    try:
-        new_limit = int(context.args[0])
-        await settings_col.update_one({"type": "config"}, {"$set": {"daily_limit": new_limit}}, upsert=True)
-        await update.message.reply_text(f"✅ Daily limit updated to {new_limit}")
-    except:
-        await update.message.reply_text("Use: /set_limit <number>")
 
 async def add_premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     try:
-        target_id = int(context.args[0])
+        uid = int(context.args[0])
         days = int(context.args[1])
         expiry = datetime.now() + timedelta(days=days)
-        await users_col.update_one({"user_id": target_id}, {"$set": {"is_premium": True, "premium_expiry": expiry}}, upsert=True)
-        await update.message.reply_text(f"✅ User {target_id} added to Premium for {days} days.")
+        await users_col.update_one({"user_id": uid}, {"$set": {"is_premium": True, "premium_expiry": expiry}}, upsert=True)
+        await update.message.reply_text(f"✅ User {uid} is now Premium for {days} days.")
     except:
-        await update.message.reply_text("Use: /add_premium <userid> <days>")
+        await update.message.reply_text("Usage: `/add_premium <id> <days>`")
 
-# --- AUTO EXPIRY TASK ---
-async def check_expiry_task(context: ContextTypes.DEFAULT_TYPE):
+async def set_limit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    try:
+        limit = int(context.args[0])
+        await settings_col.update_one({"type": "config"}, {"$set": {"daily_limit": limit}}, upsert=True)
+        await update.message.reply_text(f"✅ Daily limit set to {limit}")
+    except:
+        await update.message.reply_text("Usage: `/set_limit <number>`")
+
+# --- AUTO TASKS ---
+
+async def check_premium_expiry(context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now()
     # Notice 12h before
-    cursor = users_col.find({"is_premium": True, "premium_expiry": {"$gt": now, "$lt": now + timedelta(hours=12)}})
-    async for u in cursor:
-        try: await context.bot.send_message(u['user_id'], "⚠️ Your premium expires in 12 hours! Renew soon.")
-        except: pass
-    
-    # Expiry
-    expired = users_col.find({"is_premium": True, "premium_expiry": {"$lt": now}})
-    async for u in expired:
-        await users_col.update_one({"user_id": u['user_id']}, {"$set": {"is_premium": False}})
-        try: await context.bot.send_message(u['user_id'], "❌ Your premium has expired.")
+    reminder_cursor = users_col.find({"is_premium": True, "premium_expiry": {"$gt": now, "$lt": now + timedelta(hours=12)}})
+    async for user in reminder_cursor:
+        try: await context.bot.send_message(user['user_id'], "⚠️ Your Premium expires in 12 hours. Renew soon!")
         except: pass
 
-# --- MAIN ---
+    # Perform Expiry
+    expired_cursor = users_col.find({"is_premium": True, "premium_expiry": {"$lt": now}})
+    async for user in expired_cursor:
+        await users_col.update_one({"user_id": user['user_id']}, {"$set": {"is_premium": False}})
+        try: await context.bot.send_message(user['user_id'], "❌ Your Premium has expired.")
+        except: pass
+
+# --- MAIN RUNNER ---
 if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     
-    # Background job to check expiry every hour
-    app.job_queue.run_repeating(check_expiry_task, interval=3600, first=10)
+    # Background job
+    app.job_queue.run_repeating(check_premium_expiry, interval=3600, first=10)
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("tg", tg_search))
     app.add_handler(CommandHandler("buypremium", buy_premium))
-    app.add_handler(CommandHandler("set_limit", set_limit))
     app.add_handler(CommandHandler("add_premium", add_premium))
+    app.add_handler(CommandHandler("set_limit", set_limit))
 
-    print("Bot is running...")
+    print("Bot started successfully...")
     app.run_polling()
