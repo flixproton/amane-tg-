@@ -1,0 +1,5 @@
+python-telegram-bot[job-queue]
+motor
+pymongo
+dnspython
+requests
